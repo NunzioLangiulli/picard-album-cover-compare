@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.2
+
+- Open original images in the default external viewer by double-clicking either comparison pane or a candidate row.
+- Download remote originals before opening; never export a preview as the original.
+- Use temporary original-byte copies, keeping source artwork and music tags unchanged.
+- Keep copies available after closing the dialog; cancel pending launches on close.
+- Add Qt regression coverage and usage documentation.
+
 ## 1.0.1
 
 - Fix the zero-argument disable hook required by Picard 3.0.2 and release the controller reference after cleanup.

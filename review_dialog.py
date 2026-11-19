@@ -1,8 +1,10 @@
 """Compare album artwork without changing tags until the user applies a choice."""
 
 from pathlib import Path
+import hashlib
+import tempfile
 
-from PyQt6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QSize, Qt, QTimer, QUrl
+from PyQt6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QIcon, QImageReader, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QGroupBox, QHBoxLayout,
@@ -14,6 +16,24 @@ from picard.coverart.image import CoverArtImage, CoverArtImageError, LocalFileCo
 from picard.util import imageinfo
 
 from .review_model import Candidate, album_ids, caa_candidates, exchange_url, local_images
+
+
+_external_images = None
+
+
+def external_image_path(image):
+    """Export original bytes to a session cache, never the source artwork file."""
+    global _external_images
+    if _external_images is None:
+        _external_images = tempfile.TemporaryDirectory(prefix='picard-cover-compare-')
+    data = bytes(image.data)
+    suffix = {'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
+              'image/webp': '.webp', 'image/tiff': '.tiff', 'image/bmp': '.bmp',
+              'image/avif': '.avif'}.get(image.mimetype, '.img')
+    path = Path(_external_images.name) / (hashlib.sha256(data).hexdigest() + suffix)
+    # Rewrite the copy in case the external viewer edited it previously.
+    path.write_bytes(data)
+    return path
 
 
 def preview(data, size=QSize(440, 440)):
@@ -46,11 +66,15 @@ def details(candidate):
 
 
 class ImagePane(QGroupBox):
+    open_requested = pyqtSignal(object)
+
     def __init__(self, title, parent=None):
         super().__init__(title, parent)
         layout = QVBoxLayout(self)
         self.picture = QLabel('Select an image')
         self._pixmap = None
+        self._candidate = None
+        self.picture.setToolTip('Double-click to open the original in your default external image viewer.')
         self.picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.picture.setMinimumSize(220, 220)
         self.picture.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
@@ -66,6 +90,7 @@ class ImagePane(QGroupBox):
         layout.addWidget(self.info)
 
     def show_candidate(self, candidate):
+        self._candidate = candidate
         self._pixmap = None
         self.picture.clear()
         if candidate is None:
@@ -88,6 +113,10 @@ class ImagePane(QGroupBox):
                 Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
     def eventFilter(self, watched, event):
+        if (watched is self.picture and event.type() == QEvent.Type.MouseButtonDblClick
+                and event.button() == Qt.MouseButton.LeftButton and self._candidate is not None):
+            self.open_requested.emit(self._candidate)
+            return True
         if watched is self.picture and event.type() == QEvent.Type.Resize:
             self.render_pixmap()
         return False
@@ -106,6 +135,7 @@ class ReviewDialog(QDialog):
         self.jobs = []
         self.running = 0
         self.pending = []
+        self.external_pending = set()
         self.setWindowTitle('Album Cover Compare — Compare album covers')
         self.resize(1340, 820)
         self.setAcceptDrops(True)
@@ -116,7 +146,7 @@ class ReviewDialog(QDialog):
         title.setStyleSheet('font-size: 18px; font-weight: bold;')
         layout.addWidget(title)
         instructions = QLabel('Drop local images anywhere in this window to compare them. Select a candidate on the left; '
-                              'use Set as reference to compare any two images. Nothing is saved automatically.')
+                              'use Set as reference to compare any two images. Double-click an image or a row to open its original externally. Nothing is saved automatically.')
         instructions.setWordWrap(True)
         layout.addWidget(instructions)
         toolbar = QHBoxLayout()
@@ -146,6 +176,7 @@ class ReviewDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().hide()
         self.table.itemSelectionChanged.connect(self.selection_changed)
+        self.table.cellDoubleClicked.connect(lambda row, column: self.open_external(self.candidates[row]))
         self.table.setAcceptDrops(False)
         self.table.viewport().setAcceptDrops(False)
         splitter.addWidget(self.table)
@@ -153,6 +184,8 @@ class ReviewDialog(QDialog):
         panes = QHBoxLayout(pane_widget)
         self.left = ImagePane('Reference')
         self.right = ImagePane('Selected candidate')
+        self.left.open_requested.connect(self.open_external)
+        self.right.open_requested.connect(self.open_external)
         panes.addWidget(self.left, 1)
         panes.addWidget(self.right, 1)
         splitter.addWidget(pane_widget)
@@ -397,6 +430,12 @@ class ReviewDialog(QDialog):
                         candidate.state = 'Cannot read original: ' + str(exc)
                 self.update_row(candidate)
                 self.paint_comparison()
+                if not thumbnail and candidate.key in self.external_pending:
+                    self.external_pending.discard(candidate.key)
+                    if candidate.image is not None:
+                        self.open_external(candidate)
+                    else:
+                        self.notice('Could not open original externally: ' + candidate.state)
                 self.pump()
             self.pending.append(self.controller.api.web_service.download_url(
                 url=candidate.thumbnail_url if thumbnail else candidate.url,
@@ -418,6 +457,27 @@ class ReviewDialog(QDialog):
     def set_reference(self):
         self.reference = self.selected()
         self.paint_comparison()
+
+    def open_external(self, candidate):
+        if not self.alive or candidate is None:
+            return
+        if candidate.image is None:
+            self.external_pending.add(candidate.key)
+            self.ensure_original(candidate)
+            if candidate.image is None:
+                if candidate.loading:
+                    self.notice('Downloading the original image before opening it externally…')
+                else:
+                    self.external_pending.discard(candidate.key)
+                    self.notice('Could not open original externally: ' + candidate.state)
+                return
+            self.external_pending.discard(candidate.key)
+        try:
+            path = external_image_path(candidate.image)
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+                self.notice('Could not open the default image viewer. Temporary image: ' + str(path))
+        except (OSError, CoverArtImageError) as exc:
+            self.notice('Could not open original externally: ' + str(exc))
 
     def zoom(self):
         candidate = self.selected()
@@ -457,6 +517,7 @@ class ReviewDialog(QDialog):
         self.alive = False
         self.metadata_timer.stop()
         self.jobs.clear()
+        self.external_pending.clear()
         for request in self.pending:
             self.controller.api.web_service.abort_task(request)
         try:

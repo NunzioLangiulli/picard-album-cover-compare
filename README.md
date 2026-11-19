@@ -2,7 +2,7 @@
 
 Compare album covers from your music files, local folders and the Cover Art Archive in one window, then choose which image to use in MusicBrainz Picard.
 
-**Version:** 1.0.1 · **Author:** Borunzio · **License:** MIT
+**Version:** 1.0.2 · **Author:** Borunzio · **License:** MIT
 
 **Compatibility target:** MusicBrainz Picard 3.0.2
 
@@ -20,7 +20,7 @@ An album may already contain a good embedded cover, while Picard finds a differe
 - Drag and drop local images into the comparison, or add them with a file picker.
 - Compare two images side by side and change the reference image at any time.
 - Inspect original dimensions, megapixels, image format, file size and source location.
-- Open a scrollable view of the original image at 100%.
+- Open a scrollable view of the original image at 100%, or double-click an image to open it in the default external viewer.
 - Search Album Art Exchange in your browser using the album artist and title.
 - Apply a selected original image as the album's front cover while retaining non-front artwork in Picard's metadata.
 - Respect Picard's existing embedding and artwork replacement settings.
@@ -43,14 +43,14 @@ Once this repository is published:
 
 1. Open **Options → Plugins → Install Plugin** in Picard.
 2. Choose the repository URL installation option and paste this GitHub repository's URL.
-3. Select the **v1.0.1** release tag when choosing a reference.
+3. Select the **v1.0.2** release tag when choosing a reference.
 4. Complete installation, enable the plugin and restart Picard.
 
 Use a release tag for a versioned installation. Installing from `main` can make Picard display the branch name instead of a release version. If the release tag is missing, the repository owner must publish it first.
 
 ### From a local Git repository
 
-Choose **Local repository** in the installation dialog, select this repository's root folder, and select **v1.0.1**. Keep the `.git` directory: a folder extracted from GitHub's **Download ZIP** is not a Git repository.
+Choose **Local repository** in the installation dialog, select this repository's root folder, and select **v1.0.2**. Keep the `.git` directory: a folder extracted from GitHub's **Download ZIP** is not a Git repository.
 
 For updates, select the newer published release reference and restart Picard. Plugin settings remain associated with the same plugin identity.
 
@@ -155,13 +155,20 @@ The comparison interface originally appeared in the combined Cover Art From Hidd
 
 Do not run the combined 1.2.0 plugin alongside Album Cover Compare, because both handle artwork clicks. Keep the provider-only plugin enabled if you need its hidden-ID CAA providers. Session-only choices from the combined plugin are not migrated.
 
+## Open an image externally
+Double-click either comparison image (Reference or Selected candidate), or a candidate row, to open the full-resolution original in the operating system's default image viewer. Remote originals are downloaded first; thumbnails are never exported instead. Closing the comparison cancels pending open requests.
+
+The viewer receives a temporary copy with the original bytes, including for local artwork. External edits do not modify the source image or apply a cover in Picard. Copies remain available after closing the comparison window and are cleaned up when the plugin session ends. Opening an image does not save music tags. The internal View original at 100% action remains available.
+
+Version 1.0.2 adds Qt regressions for both panes, table double-clicks, original-byte exports, local-file isolation, remote downloads, viewer failure and cancellation. Viewer launches are mocked in automated tests; the actual OS file association is a manual check.
+
 ## Development and validation
 
-The implementation and compatibility tests target the official Picard **3.0.2** source. The 1.0.1 checks comprise **18 passing tests**:
+The implementation and compatibility tests target the official Picard **3.0.2** source. The 1.0.2 checks comprise **22 passing tests**:
 
 | Test file | Coverage |
 | --- | --- |
-| `tests/test_review.py` | 13 tests using real Qt widgets, synthetic images and a simulated Picard host/web service: local discovery, drops, comparison, source errors, downloads, click handling and album choices. |
+| `tests/test_review.py` | 17 tests using real Qt widgets, synthetic images and a simulated Picard host/web service: local discovery, drops, comparison, source errors, downloads, click handling and album choices. |
 | `tests/test_picard_compatibility.py` | 4 tests using actual Picard metadata, images, cover setters and save filters with simulated album/file containers. |
 | `tests/test_lifecycle.py` | 1 lifecycle test using Picard's loader and thumbnail equality implementation, including empty artwork, distinct widgets with identical content, repeated attachment and disable cleanup. |
 
