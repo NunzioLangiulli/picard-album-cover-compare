@@ -12,6 +12,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -291,6 +292,66 @@ class Tests(unittest.TestCase):
         self.controller.remove_album(self.album)
         self.assertNotIn(self.album, self.controller.choices)
         self.assertFalse(self.dialog.alive)
+
+    def test_double_click_both_panes_and_row_opens_original_copies(self):
+        self.dialog.paint_comparison()
+        original = list(self.file.metadata.images)
+        with patch('review_plugin.review_dialog.QDesktopServices.openUrl', return_value=True) as opened:
+            for pane in (self.dialog.left, self.dialog.right):
+                event = QMouseEvent(QEvent.Type.MouseButtonDblClick, QPointF(4, 4), QPointF(4, 4),
+                    Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+                self.assertTrue(pane.eventFilter(pane.picture, event))
+                path = Path(opened.call_args.args[0].toLocalFile())
+                self.assertEqual(path.read_bytes(), pane._candidate.image.data)
+                self.assertEqual(path.suffix, '.png')
+            row = self.dialog.candidates.index(self.dialog.reference)
+            self.dialog.table.cellDoubleClicked.emit(row, 0)
+            self.assertEqual(opened.call_count, 3)
+            exported = Path(opened.call_args.args[0].toLocalFile())
+            self.dialog.close()
+            self.assertTrue(exported.exists())
+        self.assertEqual(self.file.metadata.images, original)
+
+    def test_external_local_image_is_a_copy(self):
+        path = Path(self.temp.name) / 'original.png'
+        data = picture(900, 700)
+        path.write_bytes(data)
+        self.dialog.add_path(str(path))
+        with patch('review_plugin.review_dialog.QDesktopServices.openUrl', return_value=True) as opened:
+            self.dialog.open_external(self.dialog.selected())
+            exported = Path(opened.call_args.args[0].toLocalFile())
+            self.assertNotEqual(exported, path)
+            self.assertEqual(exported.read_bytes(), data)
+            exported.write_bytes(b'External edit')
+            self.assertEqual(path.read_bytes(), data)
+
+    def test_external_waits_for_original_not_thumbnail(self):
+        candidate = next(caa_candidates({'images': [{'image': 'https://archive.org/original.png',
+            'types': ['Front'], 'thumbnails': {'250': 'https://archive.org/thumb.png'}}]}, 'CAA release'))
+        self.dialog.add_candidate(candidate)
+        with patch('review_plugin.review_dialog.QDesktopServices.openUrl', return_value=True) as opened:
+            self.dialog.open_external(candidate)
+            self.dialog.open_external(candidate)
+            self.assertFalse(opened.called)
+            self.assertEqual(len(self.api.web_service.requests), 1)
+            data = picture(1800, 1800)
+            self.api.web_service.requests[-1].kwargs['handler'](data, None, False)
+            self.assertEqual(opened.call_count, 1)
+            self.assertEqual(Path(opened.call_args.args[0].toLocalFile()).read_bytes(), data)
+
+    def test_external_failure_and_closed_dialog_do_not_launch(self):
+        with patch('review_plugin.review_dialog.QDesktopServices.openUrl', return_value=False):
+            self.dialog.open_external(self.dialog.reference)
+            self.assertIn('Could not open', self.dialog.status.text())
+        candidate = next(caa_candidates({'images': [{'image': 'https://archive.org/original.png',
+            'types': ['Front']}]}, 'CAA release'))
+        self.dialog.add_candidate(candidate)
+        with patch('review_plugin.review_dialog.QDesktopServices.openUrl', return_value=True) as opened:
+            self.dialog.open_external(candidate)
+            request = self.api.web_service.requests[-1]
+            self.dialog.close()
+            request.kwargs['handler'](picture(), None, False)
+            self.assertFalse(opened.called)
 
     def test_window_fixture(self):
         path = Path(self.temp.name) / 'artist_album_cover.png'
